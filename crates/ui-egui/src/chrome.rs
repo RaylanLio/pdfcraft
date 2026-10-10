@@ -308,9 +308,35 @@ pub fn mode_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     if widgets::search_box(ui, tl!("Find tools and commands"), 260.0).clicked() {
                         app.palette_open = true;
                     }
+                    language_menu(app, ui);
                 });
             });
         });
+}
+
+/// The interface-language dropdown of the mode bar: the current language in itself, switching
+/// right away — the same preference as Edit ▸ Preferences (see docs/localization.md).
+fn language_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
+    let selected = crate::i18n::Lang::from_code(&app.language).map_or(tl!("Auto"), crate::i18n::Lang::name);
+    let response = widgets::ghost_button(ui, "languages", selected).on_hover_text(tl!("Interface language"));
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(190.0);
+        ui.label(egui::RichText::new(tl!("Interface language")).color(t.text_faint).small());
+        let before = app.language.clone();
+        if ui.selectable_value(&mut app.language, crate::i18n::AUTO.to_string(), tl!("Auto")).clicked() {
+            ui.close();
+        }
+        for language in crate::i18n::Lang::all() {
+            if ui.selectable_value(&mut app.language, language.code().to_string(), language.name()).clicked() {
+                ui.close();
+            }
+        }
+        if app.language != before {
+            // Relabel the rest of the frame in the new language, not next frame.
+            crate::i18n::set_current(crate::i18n::Lang::from_pref(&app.language));
+        }
+    });
 }
 
 fn main_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui) {

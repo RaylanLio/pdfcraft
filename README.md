@@ -361,7 +361,8 @@ cargo xtask screenshots                           # regenerate every screenshot 
 ```
 
 The interface language is chosen in **Menu → Edit → Preferences…** (Command-comma on macOS,
-Ctrl-comma elsewhere, also with no document open; Auto follows the system language;
+Ctrl-comma elsewhere, also with no document open) or with the language dropdown in the
+navigation bar (Auto follows the system language;
 see [docs/localization.md](docs/localization.md)) and saved. Japanese covers commands,
 dialogs, panels and keyboard shortcuts. Command search accepts the translated label, the
 English label and the stable command id; filenames, PDF contents, author names, custom

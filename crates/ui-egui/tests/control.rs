@@ -659,6 +659,24 @@ fn preferences_menu_and_shortcut_allow_switching_interface_languages() {
 }
 
 #[test]
+fn the_mode_bar_language_dropdown_switches_languages() {
+    let (mut h, c) = harness();
+    // The mode bar shows the current language in itself (the harness starts in English).
+    let dropdown = ok(&mut h, &c, "ui.inspect", json!({ "query": "English" }));
+    let dropdown = dropdown["widgets"].as_array().unwrap().iter().find(|w| w["clickable"] == true).expect("language dropdown");
+    ok(&mut h, &c, "ui.click", json!({ "id": dropdown["id"] }));
+    ok(&mut h, &c, "ui.click", json!({ "label": "日本語" }));
+    assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["language"], "ja");
+    // The dropdown closed with the pick and now shows the new language in itself.
+    let closed = ok(&mut h, &c, "ui.inspect", json!({ "query": "繁體中文" }));
+    assert_eq!(closed["count"], 0, "{closed}");
+    // Switching again from the mode bar works too.
+    ok(&mut h, &c, "ui.click", json!({ "label": "日本語" }));
+    ok(&mut h, &c, "ui.click", json!({ "label": "繁體中文" }));
+    assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["language"], "zh-hant");
+}
+
+#[test]
 fn japanese_dialogs_errors_and_custom_action_names() {
     let (mut h, c) = harness();
     ok(&mut h, &c, "ui.set", json!({"key": "language", "value": "ja"}));
