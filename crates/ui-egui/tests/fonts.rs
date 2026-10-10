@@ -6,6 +6,7 @@ use pdfcraft_ui_egui::theme;
 
 const JAPANESE: &str = "日本語の文字";
 const CHINESE: &str = "简体中文欢迎";
+const KOREAN: &str = "한국어 파일";
 const ARABIC: &str = "واحد اثنين";
 const TELUGU: &str = "తెలుగు ఫైల్";
 
@@ -124,27 +125,82 @@ fn telugu_ui_text_uses_craft_fonts() {
     }
 }
 
-/// On a machine with a suitable installed font, the installed definitions end every family
-/// with it and Arabic text has glyphs; the embedded-only definitions never name it.
+/// On a machine with suitable installed fonts, the installed definitions end every family with
+/// them, in order, and every script they name has real glyphs; the embedded-only definitions
+/// never name one. Which scripts exist is the machine's: a machine with none skips.
 #[test]
 fn system_fallback_fills_missing_scripts() {
-    assert!(!theme::font_definitions().font_data.contains_key(theme::SYSTEM_FALLBACK));
-    let defs = theme::installed_font_definitions(false);
-    if !defs.font_data.contains_key(theme::SYSTEM_FALLBACK) {
+    assert!(theme::font_definitions().font_data.keys().all(|name| !name.starts_with(theme::SYSTEM_FALLBACK_PREFIX)));
+    let names = theme::system_fallback_names(theme::HanForms::Default);
+    let defs = theme::installed_font_definitions(theme::HanForms::Default);
+    for (family, stack) in &defs.families {
+        assert_eq!(&stack[stack.len().saturating_sub(names.len())..], &names[..], "{family:?}: {stack:?}");
+        assert_eq!(stack.iter().filter(|name| name.starts_with(theme::SYSTEM_FALLBACK_PREFIX)).count(), names.len(), "{family:?}: {stack:?}");
+    }
+    assert!(names.iter().all(|name| defs.font_data.contains_key(name)), "{names:?}");
+    if names.is_empty() {
         eprintln!("skipping system_fallback_fills_missing_scripts: no installed fallback font (or PDFCRAFT_SYSTEM_FONTS=0)");
-        assert!(defs.families.values().all(|stack| !stack.iter().any(|n| n == theme::SYSTEM_FALLBACK)));
         return;
     }
-    for (family, stack) in &defs.families {
-        assert_eq!(stack.last().map(String::as_str), Some(theme::SYSTEM_FALLBACK), "{family:?}: {stack:?}");
-        assert_eq!(stack.iter().filter(|n| *n == theme::SYSTEM_FALLBACK).count(), 1, "{family:?}");
-    }
+    // One probe string per group, so the face named for a script must have its glyphs.
+    let probe = |name: &str| match name {
+        "system-fallback-han" => CHINESE,
+        "system-fallback-kana" => "あいうえお",
+        "system-fallback-hangul" => KOREAN,
+        "system-fallback-arabic" => ARABIC,
+        "system-fallback-telugu" => TELUGU,
+        other => panic!("unknown installed fallback {other}"),
+    };
     let mut fonts = Fonts::new(TextOptions::default(), defs);
     for id in families() {
-        assert!(fonts.has_glyphs(&id, ARABIC), "{id:?} lacks {ARABIC}");
         assert!(fonts.has_glyphs(&id, "PdfCraft"), "{id:?}");
     }
-    assert!(layout_widths(&mut fonts, ARABIC).iter().all(|w| w.is_finite() && *w > 0.0));
+    for name in &names {
+        let text = probe(name);
+        for id in families() {
+            assert!(fonts.has_glyphs(&id, text), "{id:?} lacks {text} ({name})");
+        }
+        assert!(layout_widths(&mut fonts, text).iter().all(|w| w.is_finite() && *w > 0.0), "{name}");
+    }
+    // The installed Telugu face shapes its conjuncts like a craft-fonts Telu face would: క్ష
+    // is one conjunct, narrower than క్‌ష held apart by a zero-width non-joiner.
+    if names.iter().any(|name| name == "system-fallback-telugu") {
+        let joined = layout_widths(&mut fonts, "క్ష");
+        let apart = layout_widths(&mut fonts, "క్\u{200c}ష");
+        for (j, a) in joined.iter().zip(&apart) {
+            assert!(j < a, "క్ష is one conjunct, narrower than క్‌ష: {j} vs {a}");
+        }
+    }
+}
+
+/// A machine whose installed Han face is a collection with regional faces (Noto Sans CJK) gets
+/// the `SC` face in Simplified Chinese mode and the `TC` face in Traditional Chinese mode; a
+/// machine whose Han face carries no such face skips.
+#[test]
+fn chinese_ui_text_uses_the_regional_installed_face() {
+    use skrifa::MetadataProvider as _;
+    let check = |forms: theme::HanForms, marker: &str| -> Result<(), String> {
+        let defs = theme::installed_font_definitions(forms);
+        let Some(data) = defs.font_data.get("system-fallback-han") else {
+            eprintln!("skipping chinese_ui_text_uses_the_regional_installed_face: no Han fallback installed");
+            return Ok(());
+        };
+        let family = |index: u32| -> Option<String> {
+            let font = skrifa::FontRef::from_index(&data.font, index).ok()?;
+            font.localized_strings(skrifa::string::StringId::FAMILY_NAME).english_or_first().map(|name| name.to_string())
+        };
+        let marked = (0..16).map_while(family).any(|name| name.contains(marker));
+        let chosen = family(data.index).unwrap_or_default();
+        if marked && !chosen.contains(marker) {
+            return Err(chosen);
+        }
+        Ok(())
+    };
+    for (forms, marker) in [(theme::HanForms::Simplified, " SC"), (theme::HanForms::Traditional, " TC")] {
+        if let Err(chosen) = check(forms, marker) {
+            panic!("{forms:?} picked {chosen}, which is not marked {marker:?}");
+        }
+    }
 }
 
 /// Without craft-fonts the interface fonts still install and lay out any text (Japanese falls

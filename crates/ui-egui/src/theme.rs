@@ -131,28 +131,41 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
 }
 
-/// Install the interface fonts with the CJK fallback order for the UI language (Chinese
-/// first for Simplified Chinese, Japanese first otherwise). Call it when the language
-/// changes; the new faces take effect next frame.
-pub fn install_fonts_for(ctx: &egui::Context, prefer_hans: bool) {
-    ctx.set_fonts(installed_font_definitions(prefer_hans));
+/// The Han glyph forms [`install_fonts_for`] applies, from the interface language.
+pub use crate::system_fonts::HanForms;
+
+/// Install the interface fonts for the UI language's Han forms (the `SC` faces first for
+/// Simplified Chinese, the installed collection's `TC` face for Traditional Chinese, Japanese
+/// first otherwise). Call it when the language changes; the new faces take effect next frame.
+pub fn install_fonts_for(ctx: &egui::Context, forms: HanForms) {
+    ctx.set_fonts(installed_font_definitions(forms));
 }
 
-/// The name of the installed face [`installed_font_definitions`] may add after the embedded ones.
-pub const SYSTEM_FALLBACK: &str = "system-fallback";
+/// The prefix of the installed-face entries [`installed_font_definitions`] may add after the
+/// embedded ones.
+pub const SYSTEM_FALLBACK_PREFIX: &str = crate::system_fonts::PREFIX;
 
-/// What [`install_fonts_for`] installs: [`font_definitions_for`], then, on desktop, one face
-/// already installed on this machine as the last fallback of every family. It only draws
-/// characters no embedded face has (an Arabic file name in a build without craft-fonts);
-/// `PDFCRAFT_SYSTEM_FONTS=0` leaves it out.
-pub fn installed_font_definitions(prefer_hans: bool) -> FontDefinitions {
+/// The names of those entries, in the order they are appended; empty when this machine has none
+/// (or `PDFCRAFT_SYSTEM_FONTS=0`).
+pub fn system_fallback_names(forms: HanForms) -> Vec<String> {
+    crate::system_fonts::fallbacks(forms).iter().map(|face| face.name.to_owned()).collect()
+}
+
+/// What [`install_fonts_for`] installs: [`font_definitions_for`], then, on desktop, the faces
+/// already installed on this machine as the last fallbacks of every family. They only draw
+/// characters no embedded face has (Chinese, Japanese and Korean text, or an Arabic file name,
+/// in a build without craft-fonts); `PDFCRAFT_SYSTEM_FONTS=0` leaves them out.
+pub fn installed_font_definitions(forms: HanForms) -> FontDefinitions {
+    // Only Simplified Chinese reorders the embedded faces (see [`font_definitions_for`]);
+    // Traditional Chinese keeps the default order — the installed collection carries the
+    // `TC` face instead.
     #[cfg_attr(target_arch = "wasm32", expect(unused_mut))]
-    let mut fonts = font_definitions_for(prefer_hans);
+    let mut fonts = font_definitions_for(matches!(forms, HanForms::Simplified));
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(data) = crate::system_fonts::fallback() {
-        fonts.font_data.insert(SYSTEM_FALLBACK.to_owned(), data);
+    for face in crate::system_fonts::fallbacks(forms) {
+        fonts.font_data.insert(face.name.to_owned(), face.data.clone());
         for stack in fonts.families.values_mut() {
-            stack.push(SYSTEM_FALLBACK.to_owned());
+            stack.push(face.name.to_owned());
         }
     }
     fonts

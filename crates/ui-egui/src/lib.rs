@@ -536,8 +536,8 @@ pub struct PdfCraftApp {
     ctx: Option<egui::Context>,
     styled: bool,
     fonts_ready: bool,
-    /// The installed fonts put the Simplified Chinese faces first (see `theme::font_definitions_for`).
-    fonts_hans: bool,
+    /// The Han forms the installed fonts were built for (see `theme::install_fonts_for`).
+    fonts_forms: theme::HanForms,
     /// The window title last sent to the platform.
     pub window_title: String,
     /// The UI control channel, when enabled (`--control`; off by default).
@@ -756,7 +756,7 @@ impl PdfCraftApp {
             ctx: None,
             styled: false,
             fonts_ready: false,
-            fonts_hans: false,
+            fonts_forms: theme::HanForms::Default,
             control: None,
             bookmark_rename: None,
             last_opened_url: None,
@@ -1775,20 +1775,21 @@ impl eframe::App for PdfCraftApp {
         // Notices raised outside `ui` (opened files, OS events, the control channel) translate too.
         let lang = i18n::Lang::from_pref(&self.language);
         i18n::set_current(lang);
-        // Simplified Chinese wants its own faces before the Japanese ones (one baseline per line).
-        let hans = lang.code() == "zh-hans";
+        // Simplified Chinese wants its `SC` faces first (one baseline per line); Traditional
+        // Chinese wants the installed collection's `TC` face (one set of forms per line).
+        let forms = theme::HanForms::from_code(lang.code());
         if !self.styled {
             egui_extras::install_image_loaders(ctx);
-            theme::install_fonts_for(ctx, hans);
-            self.fonts_hans = hans;
+            theme::install_fonts_for(ctx, forms);
+            self.fonts_forms = forms;
             theme::apply(ctx, self.theme);
             self.styled = true;
         } else {
             self.fonts_ready = true;
-            if hans != self.fonts_hans {
+            if forms != self.fonts_forms {
                 // Same family names as before, so named fonts stay valid while the new set loads.
-                theme::install_fonts_for(ctx, hans);
-                self.fonts_hans = hans;
+                theme::install_fonts_for(ctx, forms);
+                self.fonts_forms = forms;
             }
         }
         self.sync_theme(ctx);
