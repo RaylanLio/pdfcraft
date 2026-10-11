@@ -1,10 +1,14 @@
 //! Edit a PDF ▸ Add content in the real shell (egui_kittest): type text onto a page, move it,
 //! restyle it from the panel, add an image, delete with the keyboard.
 
+use std::sync::{Arc, Mutex};
+
 use egui::Pos2;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use pdfcraft_ui_egui::control::ControlClient;
 use pdfcraft_ui_egui::{PdfCraftApp, QuickTool};
+use serde_json::{Value, json};
 
 fn harness() -> Harness<'static, PdfCraftApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(|_cc| {
@@ -22,6 +26,43 @@ fn harness() -> Harness<'static, PdfCraftApp> {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     h
+}
+
+/// [`harness`] with the UI control channel attached, so tests can click combos and popups the
+/// same way the control channel does (kittest clicks on popup layers are unreliable).
+fn harness_ctl() -> (Harness<'static, PdfCraftApp>, ControlClient) {
+    let slot: Arc<Mutex<Option<ControlClient>>> = Arc::default();
+    let s = slot.clone();
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        *s.lock().unwrap() = Some(app.attach_control(&cc.egui_ctx));
+        app.open_bytes("form.pdf", None, include_bytes!("data/form.pdf").to_vec()).unwrap();
+        app.set_option("zoom", "150").unwrap();
+        app
+    });
+    h.run_steps(4);
+    let client = slot.lock().unwrap().take().unwrap();
+    for _ in 0..60 {
+        h.run_steps(2);
+        if !h.state().render_pending() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    (h, client)
+}
+
+/// One control-channel request; frames run until it is answered.
+fn ok(h: &mut Harness<'static, PdfCraftApp>, c: &ControlClient, method: &str, params: Value) -> Value {
+    let rx = c.send(method, params);
+    for _ in 0..30 {
+        h.step();
+        if let Ok(r) = rx.try_recv() {
+            return r.unwrap_or_else(|e| panic!("{method}: {e}"));
+        }
+    }
+    panic!("{method}: no reply after 30 frames");
 }
 
 fn at(h: &Harness<'static, PdfCraftApp>, x: f32, y: f32) -> Pos2 {
@@ -62,6 +103,41 @@ fn texts(h: &Harness<'static, PdfCraftApp>) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn a_script_family_draws_chinese_added_text() {
+    let Some(family) = pdfcraft_fonts::ui_chinese_fonts().first().map(|f| f.family.to_string()) else {
+        eprintln!("skipping a_script_family_draws_chinese_added_text: no Hans face in this build");
+        return;
+    };
+    let (mut h, c) = harness_ctl();
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(2);
+    // The Format text panel lists the embedded script families under the standard three; open
+    // the font-family combo (the ComboBox showing "Helvetica") and pick the family.
+    let found = ok(&mut h, &c, "ui.inspect", json!({ "query": "Helvetica" }));
+    let combo = found["widgets"].as_array().unwrap().iter().find(|w| w["role"] == "ComboBox").expect("the font-family combo");
+    ok(&mut h, &c, "ui.click", json!({ "id": combo["id"] }));
+    ok(&mut h, &c, "ui.click", json!({ "label": family.as_str() }));
+    assert_eq!(h.state().text_style.font.as_deref(), Some(family.as_str()), "the picker chose the family");
+    let p = at(&h, 40.0, 100.0);
+    click(&mut h, p);
+    h.event(egui::Event::Text("简体中文欢迎".into()));
+    h.run_steps(2);
+    // Clicking elsewhere commits the box being typed.
+    let commit = at(&h, 40.0, 250.0);
+    quick_click(&mut h, commit);
+    let toast = h.state().toast.clone();
+    let item = added(&h).into_iter().find_map(|a| match a.content {
+        pdfcraft_engine::AddedContent::Text(t) => Some(t),
+        _ => None,
+    });
+    let item = item.unwrap_or_else(|| {
+        panic!("no text item added; toast: {toast:?}, draft: {:?}", h.state().views[0].content.draft.as_ref().map(|d| d.text.clone()))
+    });
+    assert_eq!(item.text, "简体中文欢迎");
+    assert_eq!(item.font.as_deref(), Some(family.as_str()), "the picker chose the script family");
 }
 
 #[test]

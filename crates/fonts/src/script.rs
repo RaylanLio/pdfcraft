@@ -135,10 +135,9 @@ pub fn japanese_glyph(ch: char) -> Result<GlyphOutline, GlyphError> {
 /// The bounded outline and advance from the explicitly selected craft-fonts face.
 /// Uses the same complexity and missing-glyph checks as [`japanese_glyph`].
 pub fn japanese_glyph_from(face: &crate::CraftFont, ch: char) -> Result<GlyphOutline, GlyphError> {
-    let Ok(font) = FontRef::new(face.bytes) else { return Err(GlyphError::Missing) };
+    let Some(font) = font(face) else { return Err(GlyphError::Missing) };
     let loc = LocationRef::default();
-    let metrics = font.metrics(Size::unscaled(), loc);
-    let scale = 1.0 / metrics.units_per_em.max(1) as f64;
+    let scale = 1.0 / font.metrics(Size::unscaled(), loc).units_per_em.max(1) as f64;
     let Some(gid) = font.charmap().map(ch) else { return Err(GlyphError::Missing) };
     let advances = font.glyph_metrics(Size::unscaled(), loc);
     let width = advances.advance_width(gid).unwrap_or(0.0) as f64 * scale;
@@ -146,6 +145,22 @@ pub fn japanese_glyph_from(face: &crate::CraftFont, ch: char) -> Result<GlyphOut
         return Err(GlyphError::Missing);
     }
     bounded_outline(&font, gid, width)
+}
+
+/// The advance width (em units) of `ch` in the explicitly selected face, or `None` when the face
+/// has no such glyph. Lighter than [`japanese_glyph_from`]: no outline is built.
+pub fn advance_from(face: &crate::CraftFont, ch: char) -> Option<f64> {
+    let font = font(face)?;
+    let loc = LocationRef::default();
+    let scale = 1.0 / font.metrics(Size::unscaled(), loc).units_per_em.max(1) as f64;
+    let gid = font.charmap().map(ch)?;
+    let width = font.glyph_metrics(Size::unscaled(), loc).advance_width(gid)? as f64 * scale;
+    (width.is_finite() && width > 0.0).then_some(width)
+}
+
+/// The parsed face, or `None` for a face that is not a font (already reported elsewhere).
+fn font(face: &crate::CraftFont) -> Option<FontRef<'_>> {
+    FontRef::new(face.bytes).ok()
 }
 
 /// Glyph `gid` of `font` in em units with advance `width`, bounded like [`japanese_glyph`].

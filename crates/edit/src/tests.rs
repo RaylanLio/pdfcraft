@@ -209,6 +209,27 @@ fn added_items_follow_the_page_user_unit() {
 }
 
 #[test]
+fn added_text_in_a_script_family_writes_type3_and_round_trips() {
+    let Some(family) = pdfcraft_fonts::ui_chinese_fonts().first().map(|f| f.family.to_string()) else {
+        eprintln!("skipping added_text_in_a_script_family_writes_type3_and_round_trips: no Hans face in this build");
+        return;
+    };
+    let mut doc = fixture();
+    let text = AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: "简体中文欢迎".into(), font: Some(family.clone()), ..AddedText::default() };
+    add_content(&mut doc, 0, &Content::Text(text)).unwrap();
+    let doc = reopen(&doc);
+    let all = list_added(&doc);
+    let Content::Text(t) = &all[0].content else { panic!() };
+    assert_eq!(t.text, "简体中文欢迎");
+    assert_eq!(t.font.as_deref(), Some(family.as_str()), "the round trip keeps the family");
+    let page0 = streams(&doc, 0).join("\n");
+    assert!(page0.contains("/PCJp ") && page0.contains("/PCJp 12 Tf"), "{page0}");
+    let res = pdfcraft_model::pages(&doc)[0].dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned());
+    let fonts = res.and_then(|r| r.get(b"Font").map(|f| doc.resolve(f)).and_then(|f| f.as_dict().cloned()));
+    assert!(fonts.is_some_and(|f| f.contains(b"PCJp")), "the Type 3 font is in the page's resources");
+}
+
+#[test]
 fn added_text_and_images_are_page_content_that_stays_editable() {
     let mut doc = fixture();
     let text = AddedText { rect: [72.0, 600.0, 300.0, 700.0], text: "Approved by Ada\nSecond line".into(), size: 14.0, ..AddedText::default() };

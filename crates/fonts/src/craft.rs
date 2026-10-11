@@ -66,6 +66,18 @@ pub fn ui_telugu_fonts() -> Vec<&'static CraftFont> {
     CRAFT_FONTS.iter().filter(|f| f.covers("Telu")).collect()
 }
 
+/// Every distinct family in the build input's manifest, in its order — the families text can be
+/// drawn in beyond the standard fonts. Empty without craft-fonts.
+pub fn script_families() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for face in CRAFT_FONTS {
+        if !out.contains(&face.family) {
+            out.push(face.family);
+        }
+    }
+    out
+}
+
 /// Interface CJK faces in fallback order for the UI language: Simplified Chinese first when
 /// `prefer_hans`, otherwise Japanese first (the historical default).
 ///
@@ -108,6 +120,25 @@ pub fn document_japanese_font_for_style(serif: bool, bold: bool) -> Option<&'sta
 /// Empty without craft-fonts.
 pub fn document_japanese_fonts_for_style(serif: bool, bold: bool) -> Vec<&'static CraftFont> {
     document_faces(CRAFT_FONTS, serif, bold)
+}
+
+/// Every document face for CJK replacement text: the Japanese faces of
+/// [`document_japanese_fonts_for_style`], then the `Hans` faces (their `Bold` first for bold
+/// text). Japanese faces lack Simplified-only characters, so the Chinese faces cover what they
+/// cannot; a caller can move on to the next face when one lacks a glyph. Empty without
+/// craft-fonts.
+pub fn document_cjk_fonts_for_style(serif: bool, bold: bool) -> Vec<&'static CraftFont> {
+    let mut out = document_faces(CRAFT_FONTS, serif, bold);
+    let mut hans: Vec<&CraftFont> = CRAFT_FONTS.iter().filter(|f| f.covers("Hans")).collect();
+    if bold {
+        hans.sort_by_key(|f| f.style != "Bold");
+    }
+    for face in hans {
+        if !out.iter().any(|f| std::ptr::eq(*f, face)) {
+            out.push(face);
+        }
+    }
+    out
 }
 
 fn document_face(faces: &[CraftFont], serif: bool, bold: bool) -> Option<&CraftFont> {

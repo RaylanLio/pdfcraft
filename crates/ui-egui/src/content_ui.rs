@@ -416,9 +416,22 @@ pub(crate) fn format_panel(ui: &mut egui::Ui, t: &Tokens, style: &AddedText) -> 
     let mut s = style.clone();
     widgets::section_title(ui, tl!("Format text"));
     ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("font-family").selected_text(s.family.label()).width(110.0).show_ui(ui, |ui| {
+        let selected_text = s.font.clone().unwrap_or_else(|| s.family.label().to_string());
+        egui::ComboBox::from_id_salt("font-family").selected_text(selected_text).width(160.0).show_ui(ui, |ui| {
             for f in [FontFamily::Helvetica, FontFamily::Times, FontFamily::Courier] {
-                ui.selectable_value(&mut s.family, f, f.label());
+                if ui.selectable_value(&mut s.family, f, f.label()).clicked() {
+                    s.font = None;
+                }
+            }
+            // The craft-fonts families this build embedded: script text drawn with their outlines.
+            let families = pdfcraft_fonts::script_families();
+            if !families.is_empty() {
+                ui.separator();
+                for family in families {
+                    if ui.selectable_label(s.font.as_deref() == Some(family), family).clicked() {
+                        s.font = Some(family.to_string());
+                    }
+                }
             }
         });
         // A list rather than a drag value: every change is an undo step.

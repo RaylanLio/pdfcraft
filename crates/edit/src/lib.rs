@@ -393,6 +393,11 @@ pub(crate) fn undrawable(c: char) -> EditError {
     ))
 }
 
+/// A chosen script family has no glyph for the character.
+pub(crate) fn undrawable_family(family: &str, c: char) -> EditError {
+    EditError::Invalid(format!("\"{family}\" has no glyph for \"{c}\" (U+{:04X})", u32::from(c)))
+}
+
 fn text_op(x: f64, y: f64, text: &str) -> Vec<u8> {
     let mut v = format!("1 0 0 1 {} {} Tm ", n(x), n(y)).into_bytes();
     v.extend(literal(&win_ansi(text)));
@@ -618,6 +623,7 @@ pub use images::{ImageChange, PageImage, change_image, page_images, reading_imag
 pub mod text;
 pub use text::{BlockStyle, LineEdit, TextBlock, TextLine, reading_blocks, replace_block, replace_line, rewrite_block, text_blocks, text_lines};
 pub mod added;
+mod type3;
 pub use added::{Added, AddedImage, AddedText, Align, Content, Family, add_content, delete_content, first_undrawable, list_added, update_content};
 
 #[cfg(test)]

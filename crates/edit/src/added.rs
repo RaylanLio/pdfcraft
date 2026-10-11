@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
-use pdfcraft_fonts::{GlyphError, GlyphOutline, ShapedCluster, arabic_glyph, helvetica_width, literal, shape_arabic, win_ansi};
+use pdfcraft_fonts::{GlyphError, GlyphOutline, ShapedCluster, advance_from, arabic_glyph, helvetica_width, literal, shape_arabic, win_ansi};
 use unicode_bidi::{Level, ParagraphBidiInfo};
 
 use crate::{EditError, check, contents, n, page_list, place_tagged};
@@ -99,6 +99,9 @@ pub struct AddedText {
     pub size: f64,
     pub color: [f64; 3],
     pub align: Align,
+    /// A script family from craft-fonts to draw the text with (its Type 3 outlines), instead of
+    /// the standard `family`. `None` keeps the standard fonts.
+    pub font: Option<String>,
 }
 
 impl Default for AddedText {
@@ -112,6 +115,7 @@ impl Default for AddedText {
             size: 12.0,
             color: [0.0; 3],
             align: Align::Left,
+            font: None,
         }
     }
 }
@@ -206,6 +210,17 @@ fn norm(r: [f64; 4]) -> [f64; 4] {
     [r[0].min(r[2]), r[1].min(r[3]), r[0].max(r[2]), r[1].max(r[3])]
 }
 
+/// The advance width of `s` at the item's size: the chosen script family's real advances, or
+/// the standard font's estimate.
+fn text_width(t: &AddedText, s: &str) -> f64 {
+    let Some(family) = &t.font else { return t.family.width(s, t.size, t.bold) };
+    let faces = crate::type3::family_faces(family, t.bold);
+    if faces.is_empty() {
+        return t.family.width(s, t.size, t.bold);
+    }
+    s.chars().map(|c| faces.iter().find_map(|f| advance_from(f, c)).unwrap_or(0.0)).sum::<f64>() * t.size
+}
+
 /// The lines of a text item after wrapping to its box width.
 pub fn lines(t: &AddedText) -> Vec<String> {
     wrapped(t).into_iter().map(|(line, _)| line).collect()
@@ -223,7 +238,7 @@ fn wrapped(t: &AddedText) -> Vec<(String, bool)> {
         // sum of its words' and shaping stays linear in the paragraph's length. The space is the
         // paragraph's; a space between Latin words is drawn in the item's font, a few hundredths
         // of an em apart.
-        let measure = |s: &str| if arabic { arabic_width(t, s, rtl) } else { t.family.width(s, t.size, t.bold) };
+        let measure = |s: &str| if arabic { arabic_width(t, s, rtl) } else { text_width(t, s) };
         let space = measure(" ");
         let (mut line, mut line_w) = (String::new(), 0.0);
         for word in para.split(' ') {
@@ -253,6 +268,12 @@ fn is_arabic(c: char) -> bool {
 /// with the craft-fonts Arabic face (#125), or Arabic that the face can't draw (or that has no
 /// face to draw it). Page-content tools refuse such text; the Add-text editor keeps it open.
 pub fn first_undrawable(t: &AddedText) -> Option<char> {
+    // Drawn in a chosen script family: a character none of the family's faces has, or Arabic
+    // (the family is never asked to shape it; Arabic uses PdfCraft's Arabic face).
+    if let Some(family) = &t.font {
+        let faces = crate::type3::family_faces(family, t.bold);
+        return t.text.chars().find(|c| !c.is_whitespace() && (is_arabic(*c) || faces.iter().all(|f| pdfcraft_fonts::advance_from(f, *c).is_none())));
+    }
     // Arabic that nothing can draw: there's no face, or the face lacks it.
     if let Some(c) = t.text.chars().find(|c| shaped_arabic(*c) && !pdfcraft_fonts::arabic_has(*c)) {
         return Some(c);
@@ -574,6 +595,9 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
     let mut out = format!("q {} {} {} {} {} {} cm\n", n(view[0]), n(view[1]), n(view[2]), n(view[3]), n(view[4]), n(view[5])).into_bytes();
     match c {
         Content::Text(t) => {
+            if let Some(family) = &t.font {
+                return draw_script_font(doc, t, family, view, taken);
+            }
             let base = t.family.base_font(t.bold, t.italic);
             let name = font_name(base);
             let mut font = Dict::new();
@@ -648,6 +672,41 @@ fn draw(doc: &mut Document, c: &Content, view: [f64; 6], taken: &Dict, existing:
     Ok((out, res))
 }
 
+/// Draw a text item in a chosen craft-fonts family: every character from the family's Type 3
+/// outlines (no font file is embedded), with a ToUnicode map for copy and search.
+fn draw_script_font(doc: &mut Document, t: &AddedText, family: &str, view: [f64; 6], taken: &Dict) -> Result<(Vec<u8>, Dict), EditError> {
+    let faces = crate::type3::family_faces(family, t.bold);
+    let mut fonts = Dict::new();
+    // Every distinct character of every line in one font; codes start at 1.
+    let joined: String = t.text.chars().filter(|c| *c != '\n').collect();
+    let fallback = crate::type3::type3_font(doc, &mut fonts, taken, &joined, &faces)?;
+    let r = text_rect(t);
+    let [cr, cg, cb] = t.color.map(|v| v.clamp(0.0, 1.0));
+    let all = lines(t);
+    let mut out = format!("q {} {} {} {} {} {} cm\n", n(view[0]), n(view[1]), n(view[2]), n(view[3]), n(view[4]), n(view[5])).into_bytes();
+    out.extend(format!("BT /{} {} Tf {} {} {} rg\n", fallback.name, n(t.size), n(cr), n(cg), n(cb)).bytes());
+    for (i, line) in all.iter().enumerate() {
+        let w = text_width(t, line);
+        let x = match t.align {
+            Align::Left | Align::Justify => r[0],
+            Align::Center => r[0] + ((r[2] - r[0]) - w) / 2.0,
+            Align::Right => r[2] - w,
+        };
+        // Baseline: 0.8 em below the line top.
+        let y = r[3] - (i as f64 * 1.2 + 0.95) * t.size;
+        // Justified: word spacing makes every line but the last fill the box.
+        let spaces = line.matches(' ').count();
+        let tw = if t.align == Align::Justify && i + 1 < all.len() && spaces > 0 { ((r[2] - r[0]) - w).max(0.0) / spaces as f64 } else { 0.0 };
+        out.extend(format!("1 0 0 1 {} {} Tm {} Tw ", n(x), n(y), n(tw)).bytes());
+        out.extend(literal(&crate::type3::type3_encode(&fallback, line).unwrap_or_default()));
+        out.extend_from_slice(b" Tj\n");
+    }
+    out.extend_from_slice(b"ET\n");
+    let mut res = Dict::new();
+    res.set(b"Font".to_vec(), Object::Dict(fonts));
+    Ok((out, res))
+}
+
 fn params(c: &Content) -> Dict {
     let mut d = Dict::new();
     let arr = |v: &[f64]| Object::Array(v.iter().map(|x| Object::Real(*x)).collect());
@@ -668,6 +727,9 @@ fn params(c: &Content) -> Dict {
                 }),
             );
             d.set(b"Rect".to_vec(), arr(&text_rect(t)));
+            if let Some(family) = &t.font {
+                d.set(b"FontFamily".to_vec(), PdfString::literal(family.as_bytes().to_vec()));
+            }
         }
         Content::Image(i) => {
             d.set(b"Kind".to_vec(), Object::name("Image"));
@@ -711,6 +773,7 @@ fn parse(doc: &Document, d: &Dict) -> Option<Content> {
                     Some(3) => Align::Justify,
                     _ => Align::Left,
                 },
+                font: d.get(b"FontFamily").and_then(|v| doc.resolve(v).as_string().map(|s| s.to_text())),
             }))
         }
         b"Image" => {
@@ -747,13 +810,29 @@ fn validate(c: &Content) -> Result<(), EditError> {
             // Without the Arabic face, `draw` decides for the Arabic letters themselves (#403): a new
             // item is refused with what's missing, and one that already holds Arabic stays movable.
             // Everything else in it is drawn in the standard font, so it still has to fit.
-            let undrawable = if t.text.chars().any(shaped_arabic) && pdfcraft_fonts::document_arabic_font().is_none() {
-                t.text.split('\n').find_map(|line| line.chars().find(|c| !shaped_arabic(*c) && !pdfcraft_fonts::win_ansi_encodable(*c)))
+            if let Some(family) = &t.font {
+                if crate::type3::family_faces(family, t.bold).is_empty() {
+                    return Err(EditError::Invalid(format!(
+                        "\"{family}\" is not in this build; set CRAFT_FONTS_DIR to a craft-fonts checkout that has it"
+                    )));
+                }
+                // The same check the editor shows its warning with ([`first_undrawable`]).
+                if let Some(c) = first_undrawable(t) {
+                    return Err(if is_arabic(c) {
+                        EditError::Invalid(format!("\"{family}\" can't draw \"{c}\"; Arabic text is drawn with PdfCraft's Arabic face"))
+                    } else {
+                        crate::undrawable_family(family, c)
+                    });
+                }
             } else {
-                first_undrawable(t)
-            };
-            if let Some(c) = undrawable {
-                return Err(crate::undrawable(c));
+                let undrawable = if t.text.chars().any(shaped_arabic) && pdfcraft_fonts::document_arabic_font().is_none() {
+                    t.text.split('\n').find_map(|line| line.chars().find(|c| !shaped_arabic(*c) && !pdfcraft_fonts::win_ansi_encodable(*c)))
+                } else {
+                    first_undrawable(t)
+                };
+                if let Some(c) = undrawable {
+                    return Err(crate::undrawable(c));
+                }
             }
         }
         Content::Image(_) => {
@@ -902,7 +981,11 @@ pub fn delete_content(doc: &mut Document, page: usize, index: usize) -> Result<(
 fn own_fonts(doc: &Document, obj: ObjRef) -> Vec<Vec<u8>> {
     let Object::Stream(s) = &*doc.get(obj) else { return Vec::new() };
     let Ok(data) = s.decoded() else { return Vec::new() };
-    data.split(u8::is_ascii_whitespace).filter_map(|w| w.strip_prefix(b"/")).filter(|w| w.starts_with(b"PCAr")).map(<[u8]>::to_vec).collect()
+    data.split(u8::is_ascii_whitespace)
+        .filter_map(|w| w.strip_prefix(b"/"))
+        .filter(|w| w.starts_with(b"PCAr") || w.starts_with(b"PCJp"))
+        .map(<[u8]>::to_vec)
+        .collect()
 }
 
 fn drop_fonts(doc: &Document, res: &mut Dict, names: &[Vec<u8>]) {

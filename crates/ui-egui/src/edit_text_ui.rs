@@ -92,6 +92,7 @@ impl LineEditor {
         let (l, o) = (&self.look, &self.look0);
         pdfcraft_engine::BlockStyle {
             family: (l.family != o.family || l.bold != o.bold || l.italic != o.italic).then_some((l.family, l.bold, l.italic)),
+            font: (l.font != o.font).then_some(l.font.clone()).flatten(),
             size: (l.size != o.size).then_some(l.size),
             color: (l.color != o.color).then_some(l.color),
             align: (l.align != o.align).then_some(l.align),
